@@ -1,0 +1,112 @@
+{
+  "name": "go-test-runner",
+  "displayName": "Go Test Runner",
+  "description": "Modern Go test runner with parallel execution support",
+  "version": "0.1.0",
+  "publisher": "go-test-runner",
+  "engines": {
+    "vscode": "^1.106.0"
+  },
+  "categories": [
+    "Testing"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/*.go",
+    "onLanguage:go"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "goTestRunner.refreshTests",
+        "title": "Go Test: Refresh Tests",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "goTestRunner.selectProfile",
+        "title": "Go Test: Select Profile",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "goTestRunner.runAllTests",
+        "title": "Go Test: Run All Tests",
+        "icon": "$(run-all)"
+      }
+    ],
+    "configuration": {
+      "title": "Go Test Runner",
+      "properties": {
+        "goTestRunner.profiles": {
+          "type": "array",
+          "default": [
+            {
+              "name": "Default",
+              "testFlags": [
+                "-v",
+                "-p=4",
+                "-parallel=8"
+              ],
+              "testEnvVars": {}
+            },
+            {
+              "name": "Race Detector",
+              "testFlags": [
+                "-v",
+                "-race",
+                "-p=2",
+                "-parallel=4"
+              ],
+              "testEnvVars": {}
+            },
+            {
+              "name": "Fast",
+              "testFlags": [
+                "-v",
+                "-p=8",
+                "-parallel=16"
+              ],
+              "testEnvVars": {}
+            }
+          ],
+          "description": "Test execution profiles with flags and environment variables"
+        },
+        "goTestRunner.defaultProfile": {
+          "type": "string",
+          "default": "Default",
+          "description": "Default profile name"
+        },
+        "goTestRunner.autoDiscover": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically discover tests on file changes"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "keywords": [
+    "go",
+    "golang",
+    "test",
+    "testing",
+    "runner"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^18.19.130",
+    "@types/vscode": "^1.106.1",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.7.0",
+    "esbuild": "^0.27.0",
+    "eslint": "^8.57.1",
+    "typescript": "^5.9.3"
+  }
+}

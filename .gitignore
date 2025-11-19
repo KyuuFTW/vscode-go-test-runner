@@ -1,0 +1,32 @@
+# Node modules
+node_modules/
+
+# Compiled output
+out/
+*.js
+*.js.map
+
+# VS Code extension build artifacts
+*.vsix
+
+# Dependency directories
+package-lock.json
+
+# TypeScript cache
+*.tsbuildinfo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Temporary files
+*.tmp
+*.temp
