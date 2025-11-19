@@ -19,6 +19,7 @@ interface TestResult {
     status: 'pass' | 'fail' | 'skip';
     elapsed?: number;
     output: string[];
+    outputTruncated?: boolean;
 }
 
 interface StackFrame {
@@ -32,6 +33,7 @@ export class TestRunner {
     private testResults: Map<string, TestResult>;
     private outputFilter?: OutputFilter;
     private packageTestStatus: Map<string, Map<string, 'pass' | 'fail' | 'skip'>>;
+    private static readonly MAX_OUTPUT_LINES = 500;
 
     constructor(
         private controller: vscode.TestController,
@@ -70,40 +72,24 @@ export class TestRunner {
             }
         } finally {
             run.end();
-            this.displayTestSummary();
             this.collapsePassedPackages();
         }
     }
 
     async runAllTests(): Promise<void> {
-        // Clear all previous results first
-        this.testResults.clear();
-        this.packageTestStatus.clear();
-        this.outputChannel.clear();
-        
-        // Re-discover tests to get the latest test items (fast parallel discovery)
-        await this.testDiscovery.discoverTests();
-        
-        // Clear test results in the VS Code Test Explorer UI
-        for (const [, pkgItem] of this.controller.items) {
-            pkgItem.description = undefined;
-            for (const [, testItem] of pkgItem.children) {
-                this.controller.invalidateTestResults(testItem);
-            }
-            this.controller.invalidateTestResults(pkgItem);
-        }
-        
         const run = this.controller.createTestRun(new vscode.TestRunRequest());
         const profile = this.profileManager.getActiveProfile();
         const tokenSource = new vscode.CancellationTokenSource();
         
+        this.testResults.clear();
+        this.packageTestStatus.clear();
+        this.outputChannel.clear();
         this.outputChannel.show(true);
 
         try {
             await this.runAllTestsInternal(run, profile, tokenSource.token);
         } finally {
             run.end();
-            this.displayTestSummary();
             this.collapsePassedPackages();
             tokenSource.dispose();
         }
@@ -136,6 +122,21 @@ export class TestRunner {
             this.outputChannel.appendLine('Tests prepared successfully\n');
         } catch (error) {
             this.outputChannel.appendLine(`Warning during preparation: ${error}\n`);
+        }
+
+        await this.testDiscovery.discoverTests();
+        
+        // Clear test results in the VS Code Test Explorer UI
+        let packageCount = 0;
+        let testItemCount = 0;
+        for (const [, pkgItem] of this.controller.items) {
+            packageCount++;
+            pkgItem.description = undefined;
+            for (const [, testItem] of pkgItem.children) {
+                testItemCount++;
+                this.controller.invalidateTestResults(testItem);
+            }
+            this.controller.invalidateTestResults(pkgItem);
         }
 
         return new Promise((resolve, reject) => {
@@ -428,7 +429,13 @@ export class TestRunner {
                 break;
             case 'output':
                 if (event.Output) {
+                    // Keep only the last N lines (circular buffer for stack traces at end)
                     result.output.push(event.Output);
+                    if (result.output.length > TestRunner.MAX_OUTPUT_LINES) {
+                        result.output.shift(); // Remove oldest line
+                        result.outputTruncated = true;
+                    }
+                    // Still send to run output (VSCode handles this efficiently)
                     run.appendOutput(event.Output.replace(/\n/g, '\r\n'), undefined, testItem);
                 }
                 break;
@@ -540,7 +547,11 @@ export class TestRunner {
         this.outputChannel.appendLine(`${indent}${icon} ${testName}${elapsed}`);
         
         if (result.output.length > 0) {
-            this.outputChannel.appendLine(`${indent}  Output:`);
+            if (result.outputTruncated) {
+                this.outputChannel.appendLine(`${indent}  Output (last ${TestRunner.MAX_OUTPUT_LINES} lines):`);
+            } else {
+                this.outputChannel.appendLine(`${indent}  Output:`);
+            }
             for (const line of result.output) {
                 // Indent each line of output
                 const trimmed = line.trimEnd();
