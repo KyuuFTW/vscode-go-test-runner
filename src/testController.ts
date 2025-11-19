@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ProfileManager } from './config/profileManager';
 import { TestDiscovery } from './discovery/testDiscovery';
 import { TestRunner } from './runner/testRunner';
+import { OutputFilter } from './ui/outputFilter';
 
 export class TestController {
     private controller: vscode.TestController;
@@ -9,6 +10,7 @@ export class TestController {
     private testDiscovery: TestDiscovery;
     private testRunner: TestRunner;
     private statusBarItem: vscode.StatusBarItem;
+    private outputFilter: OutputFilter;
 
     constructor(private context: vscode.ExtensionContext) {
         this.controller = vscode.tests.createTestController(
@@ -18,7 +20,8 @@ export class TestController {
         
         this.profileManager = new ProfileManager();
         this.testDiscovery = new TestDiscovery(this.controller);
-        this.testRunner = new TestRunner(this.controller, this.profileManager);
+        this.outputFilter = new OutputFilter(context);
+        this.testRunner = new TestRunner(this.controller, this.profileManager, this.outputFilter);
         
         this.statusBarItem = vscode.window.createStatusBarItem(
             vscode.StatusBarAlignment.Left,
@@ -30,7 +33,8 @@ export class TestController {
         
         context.subscriptions.push(
             this.controller,
-            this.statusBarItem
+            this.statusBarItem,
+            this.outputFilter
         );
         
         // Create run profile with clear labeling
@@ -71,6 +75,10 @@ export class TestController {
         await this.testRunner.runAllTests();
     }
 
+    async toggleOutputFilter(): Promise<void> {
+        await this.outputFilter.toggleFilter();
+    }
+
     private updateStatusBar(): void {
         const profile = this.profileManager.getActiveProfile();
         this.statusBarItem.text = `$(beaker) ${profile.name}`;
@@ -80,5 +88,6 @@ export class TestController {
     dispose(): void {
         this.controller.dispose();
         this.statusBarItem.dispose();
+        this.outputFilter.dispose();
     }
 }

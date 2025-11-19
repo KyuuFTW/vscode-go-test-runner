@@ -31,6 +31,11 @@
         "command": "goTestRunner.runAllTests",
         "title": "Go Test: Run All Tests",
         "icon": "$(run-all)"
+      },
+      {
+        "command": "goTestRunner.toggleOutputFilter",
+        "title": "Go Test: Toggle Output Filter",
+        "icon": "$(filter)"
       }
     ],
     "configuration": {

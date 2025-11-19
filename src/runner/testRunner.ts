@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { spawn, execSync } from 'child_process';
 import { ProfileManager } from '../config/profileManager';
+import { OutputFilter } from '../ui/outputFilter';
 
 interface TestEvent {
     Time?: string;
@@ -19,16 +20,25 @@ interface TestResult {
     output: string[];
 }
 
+interface StackFrame {
+    file: string;
+    line: number;
+    text: string;
+}
+
 export class TestRunner {
     private outputChannel: vscode.OutputChannel;
     private testResults: Map<string, TestResult>;
+    private outputFilter?: OutputFilter;
 
     constructor(
         private controller: vscode.TestController,
-        private profileManager: ProfileManager
+        private profileManager: ProfileManager,
+        outputFilter?: OutputFilter
     ) {
         this.outputChannel = vscode.window.createOutputChannel('Go Test Runner');
         this.testResults = new Map();
+        this.outputFilter = outputFilter;
     }
 
     async runTests(
@@ -363,7 +373,7 @@ export class TestRunner {
                 result.status = 'fail';
                 result.elapsed = event.Elapsed;
                 const failureOutput = result.output.join('');
-                const message = new vscode.TestMessage(failureOutput || 'Test failed');
+                const message = this.createTestMessageWithLocation(failureOutput || 'Test failed', testItem);
                 run.failed(testItem, message, event.Elapsed ? event.Elapsed * 1000 : undefined);
                 break;
             case 'skip':
@@ -443,6 +453,11 @@ export class TestRunner {
     }
 
     private displayTestResult(result: TestResult, icon: string): void {
+        // Apply filter
+        if (this.outputFilter && !this.outputFilter.shouldShowTest(result.status)) {
+            return;
+        }
+        
         const elapsed = result.elapsed ? ` (${result.elapsed.toFixed(3)}s)` : '';
         this.outputChannel.appendLine(`${icon} ${result.id}${elapsed}`);
         
@@ -524,5 +539,56 @@ export class TestRunner {
         } catch (error) {
             this.outputChannel.appendLine(`[Error killing process tree: ${error}]`);
         }
+    }
+
+    private parseStackTrace(output: string): StackFrame[] {
+        const frames: StackFrame[] = [];
+        const lines = output.split('\n');
+        
+        // Go stack trace format: filename.go:line or /full/path/filename.go:line
+        const stackTraceRegex = /^\s*(.+\.go):(\d+)/;
+        
+        for (const line of lines) {
+            const match = line.match(stackTraceRegex);
+            if (match) {
+                const [, file, lineNum] = match;
+                frames.push({
+                    file: file.trim(),
+                    line: parseInt(lineNum, 10),
+                    text: line.trim()
+                });
+            }
+        }
+        
+        return frames;
+    }
+
+    private createTestMessageWithLocation(output: string, testItem: vscode.TestItem): vscode.TestMessage {
+        const stackFrames = this.parseStackTrace(output);
+        const message = new vscode.TestMessage(output);
+        
+        if (stackFrames.length > 0) {
+            const firstFrame = stackFrames[0];
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            
+            if (workspaceFolder) {
+                let filePath = firstFrame.file;
+                
+                // If not absolute path, resolve relative to workspace
+                if (!require('path').isAbsolute(filePath)) {
+                    filePath = require('path').join(workspaceFolder.uri.fsPath, filePath);
+                }
+                
+                try {
+                    const fileUri = vscode.Uri.file(filePath);
+                    const position = new vscode.Position(Math.max(0, firstFrame.line - 1), 0);
+                    message.location = new vscode.Location(fileUri, position);
+                } catch (e) {
+                    // If we can't create the location, continue without it
+                }
+            }
+        }
+        
+        return message;
     }
 }

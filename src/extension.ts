@@ -23,7 +23,12 @@ export function activate(context: vscode.ExtensionContext) {
         () => testController?.runAllTests()
     );
     
-    context.subscriptions.push(refreshCommand, selectProfileCommand, runAllTestsCommand);
+    const toggleFilterCommand = vscode.commands.registerCommand(
+        'goTestRunner.toggleOutputFilter',
+        () => testController?.toggleOutputFilter()
+    );
+    
+    context.subscriptions.push(refreshCommand, selectProfileCommand, runAllTestsCommand, toggleFilterCommand);
     
     vscode.window.showInformationMessage('Go Test Runner is ready!');
 }
