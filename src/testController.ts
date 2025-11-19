@@ -33,11 +33,22 @@ export class TestController {
             this.statusBarItem
         );
         
+        // Create run profile with clear labeling
         this.controller.createRunProfile(
-            'Run Tests',
+            'Go Test Runner',
             vscode.TestRunProfileKind.Run,
             (request, token) => this.testRunner.runTests(request, token),
+            true,
+            undefined,
             true
+        );
+        
+        // Create debug profile
+        this.controller.createRunProfile(
+            'Go Test Runner (Debug)',
+            vscode.TestRunProfileKind.Debug,
+            (request, token) => this.testRunner.runTests(request, token),
+            false
         );
         
         this.refreshTests();

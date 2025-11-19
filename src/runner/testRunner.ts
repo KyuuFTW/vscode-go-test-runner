@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { ProfileManager } from '../config/profileManager';
 
 interface TestEvent {
@@ -11,15 +11,24 @@ interface TestEvent {
     Elapsed?: number;
 }
 
+interface TestResult {
+    id: string;
+    name: string;
+    status: 'pass' | 'fail' | 'skip';
+    elapsed?: number;
+    output: string[];
+}
+
 export class TestRunner {
     private outputChannel: vscode.OutputChannel;
+    private testResults: Map<string, TestResult>;
 
     constructor(
         private controller: vscode.TestController,
         private profileManager: ProfileManager
     ) {
         this.outputChannel = vscode.window.createOutputChannel('Go Test Runner');
-        this.outputChannel.show(true);
+        this.testResults = new Map();
     }
 
     async runTests(
@@ -28,38 +37,73 @@ export class TestRunner {
     ): Promise<void> {
         const run = this.controller.createTestRun(request);
         const profile = this.profileManager.getActiveProfile();
+        
+        this.testResults.clear();
+        this.outputChannel.clear();
+        this.outputChannel.show(true);
 
         try {
             if (request.include) {
                 for (const test of request.include) {
-                    await this.runTest(test, run, profile);
+                    if (token.isCancellationRequested) {
+                        break;
+                    }
+                    await this.runTest(test, run, profile, token);
                 }
             } else {
-                await this.runAllTestsInternal(run, profile);
+                await this.runAllTestsInternal(run, profile, token);
             }
         } finally {
             run.end();
+            this.displayTestSummary();
         }
     }
 
     async runAllTests(): Promise<void> {
         const run = this.controller.createTestRun(new vscode.TestRunRequest());
         const profile = this.profileManager.getActiveProfile();
+        const tokenSource = new vscode.CancellationTokenSource();
+        
+        this.testResults.clear();
+        this.outputChannel.clear();
+        this.outputChannel.show(true);
 
         try {
-            await this.runAllTestsInternal(run, profile);
+            await this.runAllTestsInternal(run, profile, tokenSource.token);
         } finally {
             run.end();
+            this.displayTestSummary();
+            tokenSource.dispose();
         }
     }
 
     private async runAllTestsInternal(
         run: vscode.TestRun,
-        profile: any
+        profile: any,
+        token: vscode.CancellationToken
     ): Promise<void> {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) {
             return;
+        }
+
+        // Prepare tests: generate and clean cache
+        this.outputChannel.appendLine('Preparing tests...');
+        try {
+            this.outputChannel.appendLine('Running: go generate ./...');
+            execSync('go generate ./...', { 
+                cwd: workspaceFolder.uri.fsPath,
+                encoding: 'utf-8'
+            });
+            
+            this.outputChannel.appendLine('Running: go clean -testcache');
+            execSync('go clean -testcache', { 
+                cwd: workspaceFolder.uri.fsPath,
+                encoding: 'utf-8'
+            });
+            this.outputChannel.appendLine('Tests prepared successfully\n');
+        } catch (error) {
+            this.outputChannel.appendLine(`Warning during preparation: ${error}\n`);
         }
 
         return new Promise((resolve, reject) => {
@@ -71,6 +115,20 @@ export class TestRunner {
             });
 
             let buffer = '';
+            let cancelled = false;
+
+            const cleanup = () => {
+                if (!cancelled) {
+                    cancelled = true;
+                    this.killProcessTree(proc.pid!);
+                }
+            };
+
+            token.onCancellationRequested(() => {
+                this.outputChannel.appendLine('\n[Test run cancelled by user]');
+                cleanup();
+                resolve();
+            });
 
             proc.stdout.on('data', (data) => {
                 buffer += data.toString();
@@ -94,11 +152,15 @@ export class TestRunner {
             });
 
             proc.on('close', (code) => {
-                resolve();
+                if (!cancelled) {
+                    resolve();
+                }
             });
 
             proc.on('error', (err) => {
-                reject(err);
+                if (!cancelled) {
+                    reject(err);
+                }
             });
         });
     }
@@ -106,7 +168,8 @@ export class TestRunner {
     private async runTest(
         test: vscode.TestItem,
         run: vscode.TestRun,
-        profile: any
+        profile: any,
+        token: vscode.CancellationToken
     ): Promise<void> {
         run.started(test);
         
@@ -115,9 +178,9 @@ export class TestRunner {
         
         if (parts.length === 2) {
             const [pkg, testName] = parts;
-            await this.runSpecificTest(pkg, testName, test, run, profile);
+            await this.runSpecificTest(pkg, testName, test, run, profile, token);
         } else if (parts.length === 1) {
-            await this.runPackageTests(parts[0], test, run, profile);
+            await this.runPackageTests(parts[0], test, run, profile, token);
         }
     }
 
@@ -126,7 +189,8 @@ export class TestRunner {
         testName: string,
         test: vscode.TestItem,
         run: vscode.TestRun,
-        profile: any
+        profile: any,
+        token: vscode.CancellationToken
     ): Promise<void> {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) {
@@ -142,6 +206,20 @@ export class TestRunner {
             });
 
             let buffer = '';
+            let cancelled = false;
+
+            const cleanup = () => {
+                if (!cancelled) {
+                    cancelled = true;
+                    this.killProcessTree(proc.pid!);
+                }
+            };
+
+            token.onCancellationRequested(() => {
+                this.outputChannel.appendLine('\n[Test run cancelled by user]');
+                cleanup();
+                resolve();
+            });
 
             proc.stdout.on('data', (data) => {
                 buffer += data.toString();
@@ -160,7 +238,17 @@ export class TestRunner {
                 }
             });
 
-            proc.on('close', () => resolve());
+            proc.stderr.on('data', (data) => {
+                const output = data.toString();
+                this.outputChannel.appendLine(output);
+                run.appendOutput(output.replace(/\n/g, '\r\n'), undefined, test);
+            });
+
+            proc.on('close', () => {
+                if (!cancelled) {
+                    resolve();
+                }
+            });
         });
     }
 
@@ -168,19 +256,73 @@ export class TestRunner {
         pkg: string,
         test: vscode.TestItem,
         run: vscode.TestRun,
-        profile: any
+        profile: any,
+        token: vscode.CancellationToken
     ): Promise<void> {
-        test.children.forEach(child => run.started(child));
-        await this.runSpecificTest(pkg, '', test, run, profile);
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) {
+            return;
+        }
+
+        return new Promise((resolve) => {
+            const args = ['test', '-json', ...profile.testFlags, pkg];
+            
+            const proc = spawn('go', args, {
+                cwd: workspaceFolder.uri.fsPath,
+                env: { ...process.env, ...profile.testEnvVars }
+            });
+
+            let buffer = '';
+            let cancelled = false;
+
+            const cleanup = () => {
+                if (!cancelled) {
+                    cancelled = true;
+                    this.killProcessTree(proc.pid!);
+                }
+            };
+
+            token.onCancellationRequested(() => {
+                this.outputChannel.appendLine('\n[Test run cancelled by user]');
+                cleanup();
+                resolve();
+            });
+
+            proc.stdout.on('data', (data) => {
+                buffer += data.toString();
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (line.trim()) {
+                        try {
+                            const event: TestEvent = JSON.parse(line);
+                            this.handleTestEvent(event, run);
+                        } catch (e) {
+                            console.error('Error parsing JSON:', line);
+                        }
+                    }
+                }
+            });
+
+            proc.stderr.on('data', (data) => {
+                const output = data.toString();
+                this.outputChannel.appendLine(output);
+                run.appendOutput(output.replace(/\n/g, '\r\n'), undefined, test);
+            });
+
+            proc.on('close', () => {
+                if (!cancelled) {
+                    resolve();
+                }
+            });
+        });
     }
 
     private handleTestEvent(event: TestEvent, run: vscode.TestRun): void {
-        // Log all events to output channel for debugging
-        this.outputChannel.appendLine(`Event: ${JSON.stringify(event)}`);
-        
         if (!event.Package || !event.Test) {
             if (event.Output) {
-                this.outputChannel.appendLine(event.Output);
+                this.outputChannel.appendLine(event.Output.trimEnd());
             }
             return;
         }
@@ -189,71 +331,198 @@ export class TestRunner {
         const testItem = this.findTestItem(testId);
 
         if (!testItem) {
-            this.outputChannel.appendLine(`Test item not found: ${testId}`);
+            // Log when test item not found for debugging
+            if (event.Action === 'run') {
+                this.outputChannel.appendLine(`[DEBUG] Test item not found for: ${testId}`);
+            }
             return;
         }
+
+        // Initialize test result if needed
+        if (!this.testResults.has(testId)) {
+            this.testResults.set(testId, {
+                id: testId,
+                name: event.Test,
+                status: 'pass',
+                output: []
+            });
+        }
+
+        const result = this.testResults.get(testId)!;
 
         switch (event.Action) {
             case 'run':
                 run.started(testItem);
-                this.outputChannel.appendLine(`Started: ${testId}`);
                 break;
             case 'pass':
+                result.status = 'pass';
+                result.elapsed = event.Elapsed;
                 run.passed(testItem, event.Elapsed ? event.Elapsed * 1000 : undefined);
-                this.outputChannel.appendLine(`Passed: ${testId} (${event.Elapsed}s)`);
                 break;
             case 'fail':
-                const message = new vscode.TestMessage('Test failed');
+                result.status = 'fail';
+                result.elapsed = event.Elapsed;
+                const failureOutput = result.output.join('');
+                const message = new vscode.TestMessage(failureOutput || 'Test failed');
                 run.failed(testItem, message, event.Elapsed ? event.Elapsed * 1000 : undefined);
-                this.outputChannel.appendLine(`Failed: ${testId} (${event.Elapsed}s)`);
                 break;
             case 'skip':
+                result.status = 'skip';
                 run.skipped(testItem);
-                this.outputChannel.appendLine(`Skipped: ${testId}`);
                 break;
             case 'output':
                 if (event.Output) {
-                    run.appendOutput(event.Output.replace(/\n/g, '\r\n'));
-                    this.outputChannel.append(event.Output);
+                    result.output.push(event.Output);
+                    run.appendOutput(event.Output.replace(/\n/g, '\r\n'), undefined, testItem);
                 }
                 break;
         }
     }
 
-    private findTestItem(id: string): vscode.TestItem | undefined {
-        const parts = id.split('/');
-        if (parts.length < 2) {
-            return undefined;
-        }
+    private displayTestSummary(): void {
+        const passed: TestResult[] = [];
+        const failed: TestResult[] = [];
+        const skipped: TestResult[] = [];
 
-        // Reconstruct package path (everything except last part which is test name)
-        const testName = parts[parts.length - 1];
-        const pkg = parts.slice(0, -1).join('/');
-        
-        // First try to find by exact ID
-        this.controller.items.forEach(pkgItem => {
-            const found = pkgItem.children.get(id);
-            if (found) {
-                return found;
+        for (const result of this.testResults.values()) {
+            if (result.status === 'pass') {
+                passed.push(result);
+            } else if (result.status === 'fail') {
+                failed.push(result);
+            } else {
+                skipped.push(result);
             }
-        });
-        
-        // Try to find the package item
-        const pkgItem = this.controller.items.get(pkg);
-        if (!pkgItem) {
-            this.outputChannel.appendLine(`Package not found: ${pkg}`);
-            return undefined;
         }
 
-        // Get the test item from the package
-        const testItem = pkgItem.children.get(id);
-        if (!testItem) {
-            this.outputChannel.appendLine(`Test not found in package ${pkg}: ${id}`);
-            this.outputChannel.appendLine(`Available tests in package:`);
-            pkgItem.children.forEach(child => {
-                this.outputChannel.appendLine(`  - ${child.id}`);
-            });
+        // Header
+        this.outputChannel.appendLine('');
+        this.outputChannel.appendLine('═══════════════════════════════════════════════════════════════');
+        this.outputChannel.appendLine('                        TEST RESULTS SUMMARY');
+        this.outputChannel.appendLine('═══════════════════════════════════════════════════════════════');
+        this.outputChannel.appendLine('');
+        this.outputChannel.appendLine(`Total: ${this.testResults.size} | ✓ Passed: ${passed.length} | ✗ Failed: ${failed.length} | ⊘ Skipped: ${skipped.length}`);
+        this.outputChannel.appendLine('');
+
+        // Failed tests first (most important)
+        if (failed.length > 0) {
+            this.outputChannel.appendLine('───────────────────────────────────────────────────────────────');
+            this.outputChannel.appendLine('  ✗ FAILED TESTS');
+            this.outputChannel.appendLine('───────────────────────────────────────────────────────────────');
+            this.outputChannel.appendLine('');
+            
+            for (const result of failed) {
+                this.displayTestResult(result, '✗');
+            }
         }
-        return testItem;
+
+        // Passed tests
+        if (passed.length > 0) {
+            this.outputChannel.appendLine('───────────────────────────────────────────────────────────────');
+            this.outputChannel.appendLine('  ✓ PASSED TESTS');
+            this.outputChannel.appendLine('───────────────────────────────────────────────────────────────');
+            this.outputChannel.appendLine('');
+            
+            for (const result of passed) {
+                this.displayTestResult(result, '✓');
+            }
+        }
+
+        // Skipped tests
+        if (skipped.length > 0) {
+            this.outputChannel.appendLine('───────────────────────────────────────────────────────────────');
+            this.outputChannel.appendLine('  ⊘ SKIPPED TESTS');
+            this.outputChannel.appendLine('───────────────────────────────────────────────────────────────');
+            this.outputChannel.appendLine('');
+            
+            for (const result of skipped) {
+                this.displayTestResult(result, '⊘');
+            }
+        }
+
+        this.outputChannel.appendLine('═══════════════════════════════════════════════════════════════');
+    }
+
+    private displayTestResult(result: TestResult, icon: string): void {
+        const elapsed = result.elapsed ? ` (${result.elapsed.toFixed(3)}s)` : '';
+        this.outputChannel.appendLine(`${icon} ${result.id}${elapsed}`);
+        
+        if (result.output.length > 0) {
+            this.outputChannel.appendLine('  Output:');
+            for (const line of result.output) {
+                // Indent each line of output
+                const trimmed = line.trimEnd();
+                if (trimmed) {
+                    this.outputChannel.appendLine(`    ${trimmed}`);
+                }
+            }
+        }
+        
+        this.outputChannel.appendLine('');
+    }
+
+    private findTestItem(id: string): vscode.TestItem | undefined {
+        // Try to find exact match first
+        for (const [, pkgItem] of this.controller.items) {
+            const testItem = pkgItem.children.get(id);
+            if (testItem) {
+                return testItem;
+            }
+        }
+        
+        // For subtests, try to find parent test
+        for (const [, pkgItem] of this.controller.items) {
+            for (const [, testItem] of pkgItem.children) {
+                if (id.startsWith(testItem.id + '/')) {
+                    return testItem;
+                }
+            }
+        }
+        
+        return undefined;
+    }
+
+    private killProcessTree(pid: number): void {
+        try {
+            if (process.platform === 'win32') {
+                // Windows: use taskkill to kill process tree
+                spawn('taskkill', ['/pid', pid.toString(), '/T', '/F']);
+            } else {
+                // Unix: kill the entire process group
+                // First, get all child processes
+                const { execSync } = require('child_process');
+                
+                try {
+                    // Find all descendant processes including .test binaries
+                    const descendants = execSync(
+                        `pgrep -P ${pid}`,
+                        { encoding: 'utf-8' }
+                    ).trim().split('\n').filter((p: string) => p);
+                    
+                    // Kill all descendants first
+                    for (const childPid of descendants) {
+                        try {
+                            process.kill(parseInt(childPid), 'SIGKILL');
+                        } catch (e) {
+                            // Process might already be dead
+                        }
+                    }
+                } catch (e) {
+                    // pgrep might fail if no children
+                }
+                
+                // Kill the main process
+                try {
+                    process.kill(pid, 'SIGKILL');
+                } catch (e) {
+                    // Process might already be dead
+                }
+                
+
+            }
+            
+            this.outputChannel.appendLine(`[Killed process tree: ${pid}]`);
+        } catch (error) {
+            this.outputChannel.appendLine(`[Error killing process tree: ${error}]`);
+        }
     }
 }

@@ -8,7 +8,13 @@ const execAsync = promisify(exec);
 
 interface PackageTests {
     package: string;
-    tests: string[];
+    tests: TestInfo[];
+}
+
+interface TestInfo {
+    name: string;
+    uri: vscode.Uri;
+    range: vscode.Range;
 }
 
 export class TestDiscovery {
@@ -38,13 +44,16 @@ export class TestDiscovery {
                         pkg,
                         vscode.Uri.file(workspaceFolder.uri.fsPath)
                     );
+                    pkgItem.canResolveChildren = false;
                     
-                    for (const test of tests) {
+                    for (const testInfo of tests) {
                         const testItem = this.controller.createTestItem(
-                            `${pkg}/${test}`,
-                            test,
-                            pkgItem.uri
+                            `${pkg}/${testInfo.name}`,
+                            testInfo.name,
+                            testInfo.uri
                         );
+                        testItem.range = testInfo.range;
+                        testItem.canResolveChildren = false;
                         pkgItem.children.add(testItem);
                     }
                     
@@ -133,25 +142,54 @@ export class TestDiscovery {
         return results;
     }
 
-    private async extractTestsFromFiles(files: vscode.Uri[]): Promise<string[]> {
-        const testNames = new Set<string>();
+    private async extractTestsFromFiles(files: vscode.Uri[]): Promise<TestInfo[]> {
+        const testInfos: TestInfo[] = [];
         
         // Read all files in parallel
         const fileContents = await Promise.all(
             files.map(file => fs.readFile(file.fsPath, 'utf-8').catch(() => ''))
         );
 
-        // Extract test function names using regex
+        // Extract test function names with their locations using regex
         const testFuncRegex = /func\s+(Test\w+)\s*\(/g;
         
-        for (const content of fileContents) {
+        for (let i = 0; i < fileContents.length; i++) {
+            const content = fileContents[i];
+            const file = files[i];
+            const lines = content.split('\n');
+            
             let match;
+            testFuncRegex.lastIndex = 0; // Reset regex state
+            
             while ((match = testFuncRegex.exec(content)) !== null) {
-                testNames.add(match[1]);
+                const testName = match[1];
+                const position = match.index;
+                
+                // Find line number
+                let lineNum = 0;
+                let charCount = 0;
+                for (let j = 0; j < lines.length; j++) {
+                    charCount += lines[j].length + 1; // +1 for newline
+                    if (charCount > position) {
+                        lineNum = j;
+                        break;
+                    }
+                }
+                
+                const range = new vscode.Range(
+                    new vscode.Position(lineNum, 0),
+                    new vscode.Position(lineNum, lines[lineNum]?.length || 0)
+                );
+                
+                testInfos.push({
+                    name: testName,
+                    uri: file,
+                    range: range
+                });
             }
         }
 
-        return Array.from(testNames).sort();
+        return testInfos.sort((a, b) => a.name.localeCompare(b.name));
     }
 
     private async getPackageName(dir: string, workspaceRoot: string): Promise<string | null> {
