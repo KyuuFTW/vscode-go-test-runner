@@ -21,7 +21,7 @@ export class TestController {
         this.profileManager = new ProfileManager();
         this.testDiscovery = new TestDiscovery(this.controller);
         this.outputFilter = new OutputFilter(context);
-        this.testRunner = new TestRunner(this.controller, this.profileManager, this.outputFilter);
+        this.testRunner = new TestRunner(this.controller, this.profileManager, this.testDiscovery, this.outputFilter);
         
         this.statusBarItem = vscode.window.createStatusBarItem(
             vscode.StatusBarAlignment.Left,
@@ -79,8 +79,8 @@ export class TestController {
         await this.outputFilter.toggleFilter();
     }
 
-    clearAllResults(): void {
-        this.testRunner.clearAllResults();
+    async clearAllResults(): Promise<void> {
+        await this.testRunner.clearAllResults();
         vscode.window.showInformationMessage('All test results cleared');
     }
 

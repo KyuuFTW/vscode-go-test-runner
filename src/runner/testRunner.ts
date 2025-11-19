@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { spawn, execSync } from 'child_process';
 import { ProfileManager } from '../config/profileManager';
 import { OutputFilter } from '../ui/outputFilter';
+import { TestDiscovery } from '../discovery/testDiscovery';
 
 interface TestEvent {
     Time?: string;
@@ -35,6 +36,7 @@ export class TestRunner {
     constructor(
         private controller: vscode.TestController,
         private profileManager: ProfileManager,
+        private testDiscovery: TestDiscovery,
         outputFilter?: OutputFilter
     ) {
         this.outputChannel = vscode.window.createOutputChannel('Go Test Runner');
@@ -78,6 +80,9 @@ export class TestRunner {
         this.testResults.clear();
         this.packageTestStatus.clear();
         this.outputChannel.clear();
+        
+        // Re-discover tests to get the latest test items (fast parallel discovery)
+        await this.testDiscovery.discoverTests();
         
         // Clear test results in the VS Code Test Explorer UI
         for (const [, pkgItem] of this.controller.items) {
@@ -697,10 +702,13 @@ export class TestRunner {
         }
     }
 
-    clearAllResults(): void {
+    async clearAllResults(): Promise<void> {
         this.testResults.clear();
         this.packageTestStatus.clear();
         this.outputChannel.clear();
+        
+        // Re-discover tests to get the latest test items (fast parallel discovery)
+        await this.testDiscovery.discoverTests();
         
         // Clear test results in the VS Code Test Explorer UI
         for (const [, pkgItem] of this.controller.items) {
