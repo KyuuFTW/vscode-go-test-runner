@@ -637,9 +637,15 @@ export class TestRunner {
         this.packageTestStatus.clear();
         this.outputChannel.clear();
         
-        // Clear package descriptions
+        // Clear test results in the VS Code Test Explorer UI
         for (const [, pkgItem] of this.controller.items) {
             pkgItem.description = undefined;
+            // Invalidate all child test items to clear their status in the UI
+            for (const [, testItem] of pkgItem.children) {
+                this.controller.invalidateTestResults(testItem);
+            }
+            // Also invalidate the package item itself
+            this.controller.invalidateTestResults(pkgItem);
         }
         
         this.outputChannel.appendLine('All test results cleared');
