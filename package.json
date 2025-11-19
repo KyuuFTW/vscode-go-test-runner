@@ -1,7 +1,7 @@
 {
   "name": "go-test-runner",
   "displayName": "Go Test Runner",
-  "description": "Modern Go test runner with parallel execution support",
+  "description": "Go test runner with parallel execution support",
   "version": "0.1.0",
   "publisher": "go-test-runner",
   "engines": {
@@ -106,6 +106,10 @@
     "testing",
     "runner"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/go-test-runner"
+  },
   "author": "",
   "license": "MIT",
   "devDependencies": {
