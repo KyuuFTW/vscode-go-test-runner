@@ -30,6 +30,7 @@ export class TestRunner {
     private outputChannel: vscode.OutputChannel;
     private testResults: Map<string, TestResult>;
     private outputFilter?: OutputFilter;
+    private packageTestStatus: Map<string, Map<string, 'pass' | 'fail' | 'skip'>>;
 
     constructor(
         private controller: vscode.TestController,
@@ -39,6 +40,7 @@ export class TestRunner {
         this.outputChannel = vscode.window.createOutputChannel('Go Test Runner');
         this.testResults = new Map();
         this.outputFilter = outputFilter;
+        this.packageTestStatus = new Map();
     }
 
     async runTests(
@@ -49,6 +51,7 @@ export class TestRunner {
         const profile = this.profileManager.getActiveProfile();
         
         this.testResults.clear();
+        this.packageTestStatus.clear();
         this.outputChannel.clear();
         this.outputChannel.show(true);
 
@@ -66,6 +69,7 @@ export class TestRunner {
         } finally {
             run.end();
             this.displayTestSummary();
+            this.collapsePassedPackages();
         }
     }
 
@@ -75,6 +79,7 @@ export class TestRunner {
         const tokenSource = new vscode.CancellationTokenSource();
         
         this.testResults.clear();
+        this.packageTestStatus.clear();
         this.outputChannel.clear();
         this.outputChannel.show(true);
 
@@ -83,6 +88,7 @@ export class TestRunner {
         } finally {
             run.end();
             this.displayTestSummary();
+            this.collapsePassedPackages();
             tokenSource.dispose();
         }
     }
@@ -368,6 +374,7 @@ export class TestRunner {
                 result.status = 'pass';
                 result.elapsed = event.Elapsed;
                 run.passed(testItem, event.Elapsed ? event.Elapsed * 1000 : undefined);
+                this.updatePackageTestStatus(event.Package, event.Test, 'pass');
                 break;
             case 'fail':
                 result.status = 'fail';
@@ -375,10 +382,12 @@ export class TestRunner {
                 const failureOutput = result.output.join('');
                 const message = this.createTestMessageWithLocation(failureOutput || 'Test failed', testItem);
                 run.failed(testItem, message, event.Elapsed ? event.Elapsed * 1000 : undefined);
+                this.updatePackageTestStatus(event.Package, event.Test, 'fail');
                 break;
             case 'skip':
                 result.status = 'skip';
                 run.skipped(testItem);
+                this.updatePackageTestStatus(event.Package, event.Test, 'skip');
                 break;
             case 'output':
                 if (event.Output) {
@@ -590,5 +599,50 @@ export class TestRunner {
         }
         
         return message;
+    }
+
+    private updatePackageTestStatus(pkg: string, testName: string, status: 'pass' | 'fail' | 'skip'): void {
+        if (!this.packageTestStatus.has(pkg)) {
+            this.packageTestStatus.set(pkg, new Map());
+        }
+        this.packageTestStatus.get(pkg)!.set(testName, status);
+    }
+
+    private collapsePassedPackages(): void {
+        // VS Code Test Explorer will automatically manage tree state
+        // We track package status for potential future use
+        // The test results shown in the UI will naturally show failures prominently
+        for (const [, pkgItem] of this.controller.items) {
+            const pkgId = pkgItem.id;
+            const testStatuses = this.packageTestStatus.get(pkgId);
+            
+            if (testStatuses && testStatuses.size > 0) {
+                const allPassed = Array.from(testStatuses.values()).every(status => status === 'pass');
+                
+                // Set description to indicate all tests passed
+                if (allPassed) {
+                    const testCount = testStatuses.size;
+                    pkgItem.description = `✓ All ${testCount} tests passed`;
+                } else {
+                    const failedCount = Array.from(testStatuses.values()).filter(s => s === 'fail').length;
+                    if (failedCount > 0) {
+                        pkgItem.description = `✗ ${failedCount} failed`;
+                    }
+                }
+            }
+        }
+    }
+
+    clearAllResults(): void {
+        this.testResults.clear();
+        this.packageTestStatus.clear();
+        this.outputChannel.clear();
+        
+        // Clear package descriptions
+        for (const [, pkgItem] of this.controller.items) {
+            pkgItem.description = undefined;
+        }
+        
+        this.outputChannel.appendLine('All test results cleared');
     }
 }

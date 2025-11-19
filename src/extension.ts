@@ -28,7 +28,12 @@ export function activate(context: vscode.ExtensionContext) {
         () => testController?.toggleOutputFilter()
     );
     
-    context.subscriptions.push(refreshCommand, selectProfileCommand, runAllTestsCommand, toggleFilterCommand);
+    const clearAllResultsCommand = vscode.commands.registerCommand(
+        'goTestRunner.clearAllResults',
+        () => testController?.clearAllResults()
+    );
+    
+    context.subscriptions.push(refreshCommand, selectProfileCommand, runAllTestsCommand, toggleFilterCommand, clearAllResultsCommand);
     
     vscode.window.showInformationMessage('Go Test Runner is ready!');
 }

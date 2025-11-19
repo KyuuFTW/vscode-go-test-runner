@@ -79,6 +79,11 @@ export class TestController {
         await this.outputFilter.toggleFilter();
     }
 
+    clearAllResults(): void {
+        this.testRunner.clearAllResults();
+        vscode.window.showInformationMessage('All test results cleared');
+    }
+
     private updateStatusBar(): void {
         const profile = this.profileManager.getActiveProfile();
         this.statusBarItem.text = `$(beaker) ${profile.name}`;

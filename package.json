@@ -36,6 +36,11 @@
         "command": "goTestRunner.toggleOutputFilter",
         "title": "Go Test: Toggle Output Filter",
         "icon": "$(filter)"
+      },
+      {
+        "command": "goTestRunner.clearAllResults",
+        "title": "Go Test: Clear All Results",
+        "icon": "$(clear-all)"
       }
     ],
     "configuration": {
