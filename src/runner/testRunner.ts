@@ -74,7 +74,19 @@ export class TestRunner {
     }
 
     async runAllTests(): Promise<void> {
-        this.clearAllResults();
+        // Clear all previous results first
+        this.testResults.clear();
+        this.packageTestStatus.clear();
+        this.outputChannel.clear();
+        
+        // Clear test results in the VS Code Test Explorer UI
+        for (const [, pkgItem] of this.controller.items) {
+            pkgItem.description = undefined;
+            for (const [, testItem] of pkgItem.children) {
+                this.controller.invalidateTestResults(testItem);
+            }
+            this.controller.invalidateTestResults(pkgItem);
+        }
         
         const run = this.controller.createTestRun(new vscode.TestRunRequest());
         const profile = this.profileManager.getActiveProfile();
