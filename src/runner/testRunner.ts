@@ -74,13 +74,12 @@ export class TestRunner {
     }
 
     async runAllTests(): Promise<void> {
+        this.clearAllResults();
+        
         const run = this.controller.createTestRun(new vscode.TestRunRequest());
         const profile = this.profileManager.getActiveProfile();
         const tokenSource = new vscode.CancellationTokenSource();
         
-        this.testResults.clear();
-        this.packageTestStatus.clear();
-        this.outputChannel.clear();
         this.outputChannel.show(true);
 
         try {
