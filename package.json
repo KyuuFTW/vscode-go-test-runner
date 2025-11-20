@@ -89,6 +89,16 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically discover tests on file changes"
+        },
+        "goTestRunner.enableTestController": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable this extension's test controller (disable to use only the official Go extension test runner)"
+        },
+        "goTestRunner.setAsDefaultRunner": {
+          "type": "boolean",
+          "default": false,
+          "description": "Set as the default test runner (when true, this extension runs automatically when clicking 'Run Test')"
         }
       }
     }

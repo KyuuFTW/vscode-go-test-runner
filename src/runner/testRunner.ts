@@ -18,8 +18,7 @@ interface TestResult {
     name: string;
     status: 'pass' | 'fail' | 'skip';
     elapsed?: number;
-    output: string[];
-    outputTruncated?: boolean;
+    uiOutputLineCount: number;
 }
 
 interface StackFrame {
@@ -31,9 +30,11 @@ interface StackFrame {
 export class TestRunner {
     private outputChannel: vscode.OutputChannel;
     private testResults: Map<string, TestResult>;
+    private failedTestsOutput: Map<string, { lines: string[], truncated: boolean }>;
     private outputFilter?: OutputFilter;
     private packageTestStatus: Map<string, Map<string, 'pass' | 'fail' | 'skip'>>;
     private static readonly MAX_OUTPUT_LINES = 500;
+    private static readonly MAX_UI_OUTPUT_LINES = 100;
 
     constructor(
         private controller: vscode.TestController,
@@ -43,6 +44,7 @@ export class TestRunner {
     ) {
         this.outputChannel = vscode.window.createOutputChannel('Go Test Runner');
         this.testResults = new Map();
+        this.failedTestsOutput = new Map();
         this.outputFilter = outputFilter;
         this.packageTestStatus = new Map();
     }
@@ -55,6 +57,7 @@ export class TestRunner {
         const profile = this.profileManager.getActiveProfile();
         
         this.testResults.clear();
+        this.failedTestsOutput.clear();
         this.packageTestStatus.clear();
         this.outputChannel.clear();
         this.outputChannel.show(true);
@@ -82,6 +85,7 @@ export class TestRunner {
         const tokenSource = new vscode.CancellationTokenSource();
         
         this.testResults.clear();
+        this.failedTestsOutput.clear();
         this.packageTestStatus.clear();
         this.outputChannel.clear();
         this.outputChannel.show(true);
@@ -382,7 +386,7 @@ export class TestRunner {
                 id: testId,
                 name: event.Test,
                 status: 'pass',
-                output: []
+                uiOutputLineCount: 0
             });
         }
 
@@ -401,8 +405,16 @@ export class TestRunner {
             case 'fail':
                 result.status = 'fail';
                 result.elapsed = event.Elapsed;
-                const failureOutput = result.output.join('');
-                const message = this.createTestMessageWithLocation(failureOutput || 'Test failed', testItem);
+                // Get output from failed tests map
+                const outputData = this.failedTestsOutput.get(testId);
+                const failureOutput = outputData ? outputData.lines.join('') : '';
+                const truncationNotice = outputData?.truncated 
+                    ? `[Output truncated - showing last ${TestRunner.MAX_OUTPUT_LINES} lines. See Output Channel for full output]\n\n` 
+                    : '';
+                const message = this.createTestMessageWithLocation(
+                    truncationNotice + failureOutput || 'Test failed - see Output Channel', 
+                    testItem
+                );
                 run.failed(testItem, message, event.Elapsed ? event.Elapsed * 1000 : undefined);
                 this.updatePackageTestStatus(event.Package, event.Test, 'fail');
                 break;
@@ -413,17 +425,71 @@ export class TestRunner {
                 break;
             case 'output':
                 if (event.Output) {
-                    // Keep only the last N lines (circular buffer for stack traces at end)
-                    result.output.push(event.Output);
-                    if (result.output.length > TestRunner.MAX_OUTPUT_LINES) {
-                        result.output.shift(); // Remove oldest line
-                        result.outputTruncated = true;
-                    }
-                    // Still send to run output (VSCode handles this efficiently)
-                    run.appendOutput(event.Output.replace(/\n/g, '\r\n'), undefined, testItem);
+                    this.handleTestOutput(testId, event.Output, testItem, run, result);
                 }
                 break;
         }
+    }
+
+    private handleTestOutput(
+        testId: string,
+        output: string,
+        testItem: vscode.TestItem,
+        run: vscode.TestRun,
+        result: TestResult
+    ): void {
+        // Always send to Output Channel (full log)
+        this.outputChannel.appendLine(output.trimEnd());
+        
+        // Send limited output to UI
+        if (result.uiOutputLineCount < TestRunner.MAX_UI_OUTPUT_LINES) {
+            run.appendOutput(output.replace(/\n/g, '\r\n'), undefined, testItem);
+            result.uiOutputLineCount++;
+        } else if (result.uiOutputLineCount === TestRunner.MAX_UI_OUTPUT_LINES) {
+            // Add truncation notice once
+            const truncationMsg = '\r\n... [Output truncated - see Output Channel for full test output] ...\r\n';
+            run.appendOutput(truncationMsg, undefined, testItem);
+            result.uiOutputLineCount++;
+        }
+        
+        // Only collect output for potential failures
+        if (this.shouldCollectOutput(output, result)) {
+            if (!this.failedTestsOutput.has(testId)) {
+                this.failedTestsOutput.set(testId, { lines: [], truncated: false });
+            }
+            
+            const outputData = this.failedTestsOutput.get(testId)!;
+            outputData.lines.push(output);
+            
+            // Circular buffer for failed tests only
+            if (outputData.lines.length > TestRunner.MAX_OUTPUT_LINES) {
+                outputData.lines.shift();
+                outputData.truncated = true;
+            }
+        }
+    }
+
+    private shouldCollectOutput(output: string, result: TestResult): boolean {
+        // Already collecting (test has been marked as failing or suspected)
+        if (result.status === 'fail') {
+            return true;
+        }
+        
+        // Heuristic: collect if output indicates potential failure
+        // Common Go test failure patterns
+        return output.includes('FAIL') || 
+               output.includes('panic:') || 
+               output.includes('fatal error:') ||
+               output.includes('Error:') ||
+               output.includes('error:') ||
+               output.includes('expected') ||
+               output.includes('got:') ||
+               output.includes('want:') ||
+               output.includes('--- FAIL') ||
+               output.includes('FAIL:') ||
+               output.includes('testing.go:') || // Stack trace indicator
+               output.includes('goroutine') ||    // Panic stack trace
+               /\s+\S+_test\.go:\d+:/.test(output); // test file with line number (common in failures)
     }
 
     private findTestItem(id: string): vscode.TestItem | undefined {
@@ -577,6 +643,7 @@ export class TestRunner {
 
     async clearAllResults(): Promise<void> {
         this.testResults.clear();
+        this.failedTestsOutput.clear();
         this.packageTestStatus.clear();
         this.outputChannel.clear();
         
