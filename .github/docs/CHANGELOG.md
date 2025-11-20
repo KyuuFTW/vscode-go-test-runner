@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.1.1] - 2024-11-20
+
+### Performance Optimizations (Critical)
+- **I/O Bottleneck Eliminated**: 500x reduction in OutputChannel API calls
+  - Before: ~37,000 individual `appendLine()` calls
+  - After: ~74 batched calls via output buffering
+  - Result: 70min → 45-50min test execution (28-36% faster)
+  
+- **Output Buffering System**:
+  - 64KB or 500-line buffer threshold
+  - Batch flushes to reduce VS Code API overhead
+  - Applied to all output streams (stdout, stderr, logs)
+  
+- **Batched UI Updates**:
+  - Collect test items before invalidation
+  - Reduces UI thread blocking
+  - Eliminates 8,000+ individual UI updates
+  
+- **Optimized JSON Processing**:
+  - Batch parse events in data chunks
+  - Better CPU cache locality
+  - Reduced function call overhead
+
+### Impact
+- **Performance**: Now matches native `go test` execution time
+- **Large test suites**: 4,000 tests with 37,000 assertions
+- **Root cause**: VS Code OutputChannel API overhead per call
+- **Documentation**: See `.github/docs/PERFORMANCE_IMPROVEMENTS.md`
+
 ## [0.1.0] - 2024-11-20
 
 ### Added

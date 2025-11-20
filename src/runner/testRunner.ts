@@ -35,6 +35,9 @@ export class TestRunner {
     private packageTestStatus: Map<string, Map<string, 'pass' | 'fail' | 'skip'>>;
     private static readonly MAX_OUTPUT_LINES = 500;
     private static readonly MAX_UI_OUTPUT_LINES = 100;
+    private outputBuffer: string[];
+    private outputBufferSize: number;
+    private flushTimer?: NodeJS.Timeout;
 
     constructor(
         private controller: vscode.TestController,
@@ -47,6 +50,8 @@ export class TestRunner {
         this.failedTestsOutput = new Map();
         this.outputFilter = outputFilter;
         this.packageTestStatus = new Map();
+        this.outputBuffer = [];
+        this.outputBufferSize = 0;
     }
 
     async runTests(
@@ -59,6 +64,8 @@ export class TestRunner {
         this.testResults.clear();
         this.failedTestsOutput.clear();
         this.packageTestStatus.clear();
+        this.outputBuffer = [];
+        this.outputBufferSize = 0;
         this.outputChannel.clear();
         this.outputChannel.show(true);
 
@@ -74,6 +81,7 @@ export class TestRunner {
                 await this.runAllTestsInternal(run, profile, token);
             }
         } finally {
+            this.flushOutputBuffer();
             run.end();
             this.collapsePassedPackages();
         }
@@ -87,12 +95,15 @@ export class TestRunner {
         this.testResults.clear();
         this.failedTestsOutput.clear();
         this.packageTestStatus.clear();
+        this.outputBuffer = [];
+        this.outputBufferSize = 0;
         this.outputChannel.clear();
         this.outputChannel.show(true);
 
         try {
             await this.runAllTestsInternal(run, profile, tokenSource.token);
         } finally {
+            this.flushOutputBuffer();
             run.end();
             this.collapsePassedPackages();
             tokenSource.dispose();
@@ -110,37 +121,24 @@ export class TestRunner {
         }
 
         // Prepare tests: generate and clean cache
-        this.outputChannel.appendLine('Preparing tests...');
+        this.appendToOutputBuffer('Preparing tests...');
         try {
-            this.outputChannel.appendLine('Running: go generate ./...');
+            this.appendToOutputBuffer('Running: go generate ./...');
             execSync('go generate ./...', { 
                 cwd: workspaceFolder.uri.fsPath,
                 encoding: 'utf-8'
             });
             
-            this.outputChannel.appendLine('Running: go clean -testcache');
+            this.appendToOutputBuffer('Running: go clean -testcache');
             execSync('go clean -testcache', { 
                 cwd: workspaceFolder.uri.fsPath,
                 encoding: 'utf-8'
             });
-            this.outputChannel.appendLine('Tests prepared successfully\n');
+            this.appendToOutputBuffer('Tests prepared successfully\n');
+            this.flushOutputBuffer();
         } catch (error) {
-            this.outputChannel.appendLine(`Warning during preparation: ${error}\n`);
-        }
-
-        await this.testDiscovery.discoverTests();
-        
-        // Clear test results in the VS Code Test Explorer UI
-        let packageCount = 0;
-        let testItemCount = 0;
-        for (const [, pkgItem] of this.controller.items) {
-            packageCount++;
-            pkgItem.description = undefined;
-            for (const [, testItem] of pkgItem.children) {
-                testItemCount++;
-                this.controller.invalidateTestResults(testItem);
-            }
-            this.controller.invalidateTestResults(pkgItem);
+            this.appendToOutputBuffer(`Warning during preparation: ${error}\n`);
+            this.flushOutputBuffer();
         }
 
         return new Promise((resolve, reject) => {
@@ -162,7 +160,8 @@ export class TestRunner {
             };
 
             token.onCancellationRequested(() => {
-                this.outputChannel.appendLine('\n[Test run cancelled by user]');
+                this.appendToOutputBuffer('\n[Test run cancelled by user]');
+                this.flushOutputBuffer();
                 cleanup();
                 resolve();
             });
@@ -172,24 +171,31 @@ export class TestRunner {
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || '';
 
+                // Batch parse JSON events to reduce overhead
+                const events: TestEvent[] = [];
                 for (const line of lines) {
                     if (line.trim()) {
                         try {
-                            const event: TestEvent = JSON.parse(line);
-                            this.handleTestEvent(event, run);
+                            events.push(JSON.parse(line));
                         } catch (e) {
                             console.error('Error parsing JSON:', line);
                         }
                     }
                 }
+                
+                // Process all events in batch
+                for (const event of events) {
+                    this.handleTestEvent(event, run);
+                }
             });
 
             proc.stderr.on('data', (data) => {
-                this.outputChannel.appendLine(data.toString());
+                this.appendToOutputBuffer(data.toString());
             });
 
             proc.on('close', (code) => {
                 if (!cancelled) {
+                    this.flushOutputBuffer();
                     resolve();
                 }
             });
@@ -262,7 +268,8 @@ export class TestRunner {
             };
 
             token.onCancellationRequested(() => {
-                this.outputChannel.appendLine('\n[Test run cancelled by user]');
+                this.appendToOutputBuffer('\n[Test run cancelled by user]');
+                this.flushOutputBuffer();
                 cleanup();
                 resolve();
             });
@@ -272,21 +279,26 @@ export class TestRunner {
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || '';
 
+                // Batch parse JSON events
+                const events: TestEvent[] = [];
                 for (const line of lines) {
                     if (line.trim()) {
                         try {
-                            const event: TestEvent = JSON.parse(line);
-                            this.handleTestEvent(event, run);
+                            events.push(JSON.parse(line));
                         } catch (e) {
                             console.error('Error parsing JSON:', line);
                         }
                     }
                 }
+                
+                for (const event of events) {
+                    this.handleTestEvent(event, run);
+                }
             });
 
             proc.stderr.on('data', (data) => {
                 const output = data.toString();
-                this.outputChannel.appendLine(output);
+                this.appendToOutputBuffer(output);
                 run.appendOutput(output.replace(/\n/g, '\r\n'), undefined, test);
             });
 
@@ -329,7 +341,8 @@ export class TestRunner {
             };
 
             token.onCancellationRequested(() => {
-                this.outputChannel.appendLine('\n[Test run cancelled by user]');
+                this.appendToOutputBuffer('\n[Test run cancelled by user]');
+                this.flushOutputBuffer();
                 cleanup();
                 resolve();
             });
@@ -339,21 +352,26 @@ export class TestRunner {
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || '';
 
+                // Batch parse JSON events
+                const events: TestEvent[] = [];
                 for (const line of lines) {
                     if (line.trim()) {
                         try {
-                            const event: TestEvent = JSON.parse(line);
-                            this.handleTestEvent(event, run);
+                            events.push(JSON.parse(line));
                         } catch (e) {
                             console.error('Error parsing JSON:', line);
                         }
                     }
                 }
+                
+                for (const event of events) {
+                    this.handleTestEvent(event, run);
+                }
             });
 
             proc.stderr.on('data', (data) => {
                 const output = data.toString();
-                this.outputChannel.appendLine(output);
+                this.appendToOutputBuffer(output);
                 run.appendOutput(output.replace(/\n/g, '\r\n'), undefined, test);
             });
 
@@ -368,7 +386,7 @@ export class TestRunner {
     private handleTestEvent(event: TestEvent, run: vscode.TestRun): void {
         if (!event.Package || !event.Test) {
             if (event.Output) {
-                this.outputChannel.appendLine(event.Output.trimEnd());
+                this.appendToOutputBuffer(event.Output);
             }
             return;
         }
@@ -438,8 +456,8 @@ export class TestRunner {
         run: vscode.TestRun,
         result: TestResult
     ): void {
-        // Always send to Output Channel (full log)
-        this.outputChannel.appendLine(output.trimEnd());
+        // Buffer output to reduce I/O overhead (flush every 64KB or 500 lines)
+        this.appendToOutputBuffer(output);
         
         // Send limited output to UI
         if (result.uiOutputLineCount < TestRunner.MAX_UI_OUTPUT_LINES) {
@@ -466,6 +484,29 @@ export class TestRunner {
                 outputData.lines.shift();
                 outputData.truncated = true;
             }
+        }
+    }
+
+    private appendToOutputBuffer(output: string): void {
+        const trimmed = output.trimEnd();
+        this.outputBuffer.push(trimmed);
+        this.outputBufferSize += trimmed.length;
+        
+        // Flush if buffer exceeds 64KB or 500 lines
+        if (this.outputBufferSize >= 65536 || this.outputBuffer.length >= 500) {
+            this.flushOutputBuffer();
+        }
+    }
+
+    private flushOutputBuffer(): void {
+        if (this.outputBuffer.length > 0) {
+            this.outputChannel.appendLine(this.outputBuffer.join('\n'));
+            this.outputBuffer = [];
+            this.outputBufferSize = 0;
+        }
+        if (this.flushTimer) {
+            clearTimeout(this.flushTimer);
+            this.flushTimer = undefined;
         }
     }
 
@@ -645,20 +686,25 @@ export class TestRunner {
         this.testResults.clear();
         this.failedTestsOutput.clear();
         this.packageTestStatus.clear();
+        this.outputBuffer = [];
+        this.outputBufferSize = 0;
         this.outputChannel.clear();
         
         // Re-discover tests to get the latest test items (fast parallel discovery)
         await this.testDiscovery.discoverTests();
         
-        // Clear test results in the VS Code Test Explorer UI
+        // Clear test results in the VS Code Test Explorer UI (batched)
+        const itemsToInvalidate: vscode.TestItem[] = [];
         for (const [, pkgItem] of this.controller.items) {
             pkgItem.description = undefined;
-            // Invalidate all child test items to clear their status in the UI
+            itemsToInvalidate.push(pkgItem);
             for (const [, testItem] of pkgItem.children) {
-                this.controller.invalidateTestResults(testItem);
+                itemsToInvalidate.push(testItem);
             }
-            // Also invalidate the package item itself
-            this.controller.invalidateTestResults(pkgItem);
+        }
+        
+        for (const item of itemsToInvalidate) {
+            this.controller.invalidateTestResults(item);
         }
         
         this.outputChannel.appendLine('All test results cleared');

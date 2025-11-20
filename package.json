@@ -2,7 +2,7 @@
   "name": "go-test-runner",
   "displayName": "Go Test Runner",
   "description": "Go test runner with parallel execution support",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "go-test-runner",
   "engines": {
     "vscode": "^1.106.0"
