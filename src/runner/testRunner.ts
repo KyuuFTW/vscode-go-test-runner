@@ -207,26 +207,21 @@ export class TestRunner {
         run.started(test);
         
         const testId = test.id;
-        this.outputChannel.appendLine(`[DEBUG] Running test: ${testId}`);
-        this.outputChannel.appendLine(`[DEBUG] Has children: ${test.children.size > 0}`);
         
         // Check if this is a package item (has children) or a test item (no children)
         if (test.children.size > 0) {
             // This is a package item - run all tests in package
-            this.outputChannel.appendLine(`[DEBUG] Running package tests: ${testId}`);
             await this.runPackageTests(testId, test, run, profile, token);
         } else {
             // This is a test item - extract package and test name
             // Test ID format: "pkg/path/TestName" where last part is the test name
             const lastSlashIndex = testId.lastIndexOf('/');
             if (lastSlashIndex === -1) {
-                this.outputChannel.appendLine(`[DEBUG] Invalid test ID format: ${testId}`);
                 return;
             }
             
             const pkg = testId.substring(0, lastSlashIndex);
             const testName = testId.substring(lastSlashIndex + 1);
-            this.outputChannel.appendLine(`[DEBUG] Running specific test: ${testName} in package ${pkg}`);
             await this.runSpecificTest(pkg, testName, test, run, profile, token);
         }
     }
@@ -308,18 +303,11 @@ export class TestRunner {
     ): Promise<void> {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) {
-            this.outputChannel.appendLine('[DEBUG] No workspace folder found');
             return;
         }
 
-        this.outputChannel.appendLine(`[DEBUG] Running package tests for: ${pkg}`);
-        this.outputChannel.appendLine(`[DEBUG] Workspace: ${workspaceFolder.uri.fsPath}`);
-        this.outputChannel.appendLine(`[DEBUG] Profile flags: ${profile.testFlags.join(' ')}`);
-
         return new Promise((resolve) => {
             const args = ['test', '-json', ...profile.testFlags, pkg];
-            
-            this.outputChannel.appendLine(`[DEBUG] Executing: go ${args.join(' ')}`);
             
             const proc = spawn('go', args, {
                 cwd: workspaceFolder.uri.fsPath,
@@ -385,10 +373,6 @@ export class TestRunner {
         const testItem = this.findTestItem(testId);
 
         if (!testItem) {
-            // Log when test item not found for debugging
-            if (event.Action === 'run') {
-                this.outputChannel.appendLine(`[DEBUG] Test item not found for: ${testId}`);
-            }
             return;
         }
 
@@ -440,128 +424,6 @@ export class TestRunner {
                 }
                 break;
         }
-    }
-
-    private displayTestSummary(): void {
-        const passed: TestResult[] = [];
-        const failed: TestResult[] = [];
-        const skipped: TestResult[] = [];
-
-        for (const result of this.testResults.values()) {
-            if (result.status === 'pass') {
-                passed.push(result);
-            } else if (result.status === 'fail') {
-                failed.push(result);
-            } else {
-                skipped.push(result);
-            }
-        }
-
-        // Header
-        this.outputChannel.appendLine('');
-        this.outputChannel.appendLine('═══════════════════════════════════════════════════════════════');
-        this.outputChannel.appendLine('                        TEST RESULTS SUMMARY');
-        this.outputChannel.appendLine('═══════════════════════════════════════════════════════════════');
-        this.outputChannel.appendLine('');
-        this.outputChannel.appendLine(`Total: ${this.testResults.size} | ✓ Passed: ${passed.length} | ✗ Failed: ${failed.length} | ⊘ Skipped: ${skipped.length}`);
-        this.outputChannel.appendLine('');
-
-        // Failed tests first (most important) - grouped by package
-        if (failed.length > 0) {
-            this.outputChannel.appendLine('───────────────────────────────────────────────────────────────');
-            this.outputChannel.appendLine('  ✗ FAILED TESTS');
-            this.outputChannel.appendLine('───────────────────────────────────────────────────────────────');
-            this.outputChannel.appendLine('');
-            
-            this.displayTestsByPackage(failed, '✗');
-        }
-
-        // Passed tests - grouped by package
-        if (passed.length > 0) {
-            this.outputChannel.appendLine('───────────────────────────────────────────────────────────────');
-            this.outputChannel.appendLine('  ✓ PASSED TESTS');
-            this.outputChannel.appendLine('───────────────────────────────────────────────────────────────');
-            this.outputChannel.appendLine('');
-            
-            this.displayTestsByPackage(passed, '✓');
-        }
-
-        // Skipped tests - grouped by package
-        if (skipped.length > 0) {
-            this.outputChannel.appendLine('───────────────────────────────────────────────────────────────');
-            this.outputChannel.appendLine('  ⊘ SKIPPED TESTS');
-            this.outputChannel.appendLine('───────────────────────────────────────────────────────────────');
-            this.outputChannel.appendLine('');
-            
-            this.displayTestsByPackage(skipped, '⊘');
-        }
-
-        this.outputChannel.appendLine('═══════════════════════════════════════════════════════════════');
-    }
-
-    private displayTestsByPackage(results: TestResult[], icon: string): void {
-        // Group results by package
-        const packageMap = new Map<string, TestResult[]>();
-        
-        for (const result of results) {
-            // Extract package from test ID (everything before last '/')
-            const lastSlashIndex = result.id.lastIndexOf('/');
-            const pkg = lastSlashIndex > 0 ? result.id.substring(0, lastSlashIndex) : result.id;
-            
-            if (!packageMap.has(pkg)) {
-                packageMap.set(pkg, []);
-            }
-            packageMap.get(pkg)!.push(result);
-        }
-
-        // Sort packages alphabetically
-        const sortedPackages = Array.from(packageMap.keys()).sort();
-
-        // Display each package and its tests
-        for (const pkg of sortedPackages) {
-            const pkgResults = packageMap.get(pkg)!;
-            
-            // Package header with test count
-            this.outputChannel.appendLine(`📦 ${pkg} (${pkgResults.length} test${pkgResults.length > 1 ? 's' : ''})`);
-            
-            // Display tests in this package
-            for (const result of pkgResults) {
-                this.displayTestResult(result, icon, '  ');
-            }
-            
-            this.outputChannel.appendLine('');
-        }
-    }
-
-    private displayTestResult(result: TestResult, icon: string, indent: string = ''): void {
-        // Apply filter
-        if (this.outputFilter && !this.outputFilter.shouldShowTest(result.status)) {
-            return;
-        }
-        
-        // Extract just the test name (last part after final '/')
-        const lastSlashIndex = result.id.lastIndexOf('/');
-        const testName = lastSlashIndex > 0 ? result.id.substring(lastSlashIndex + 1) : result.name;
-        
-        const elapsed = result.elapsed ? ` (${result.elapsed.toFixed(3)}s)` : '';
-        this.outputChannel.appendLine(`${indent}${icon} ${testName}${elapsed}`);
-        
-        if (result.output.length > 0) {
-            if (result.outputTruncated) {
-                this.outputChannel.appendLine(`${indent}  Output (last ${TestRunner.MAX_OUTPUT_LINES} lines):`);
-            } else {
-                this.outputChannel.appendLine(`${indent}  Output:`);
-            }
-            for (const line of result.output) {
-                // Indent each line of output
-                const trimmed = line.trimEnd();
-                if (trimmed) {
-                    this.outputChannel.appendLine(`${indent}    ${trimmed}`);
-                }
-            }
-        }
-        
-        this.outputChannel.appendLine('');
     }
 
     private findTestItem(id: string): vscode.TestItem | undefined {
