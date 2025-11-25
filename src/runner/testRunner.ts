@@ -21,6 +21,12 @@ interface TestResult {
     uiOutputLineCount: number;
 }
 
+interface UIOutputBuffer {
+    testItem: vscode.TestItem;
+    lines: string[];
+    byteSize: number;
+}
+
 interface StackFrame {
     file: string;
     line: number;
@@ -35,9 +41,14 @@ export class TestRunner {
     private packageTestStatus: Map<string, Map<string, 'pass' | 'fail' | 'skip'>>;
     private static readonly MAX_OUTPUT_LINES = 500;
     private static readonly MAX_UI_OUTPUT_LINES = 100;
+    private static readonly UI_BUFFER_SIZE = 16384; // 16KB buffer for UI output
+    private static readonly UI_FLUSH_INTERVAL = 50; // 50ms flush interval for near real-time feel
     private outputBuffer: string[];
     private outputBufferSize: number;
     private flushTimer?: NodeJS.Timeout;
+    private uiOutputBuffers: Map<string, UIOutputBuffer>;
+    private uiFlushTimer?: NodeJS.Timeout;
+    private currentRun?: vscode.TestRun;
 
     constructor(
         private controller: vscode.TestController,
@@ -52,6 +63,7 @@ export class TestRunner {
         this.packageTestStatus = new Map();
         this.outputBuffer = [];
         this.outputBufferSize = 0;
+        this.uiOutputBuffers = new Map();
     }
 
     async runTests(
@@ -59,6 +71,7 @@ export class TestRunner {
         token: vscode.CancellationToken
     ): Promise<void> {
         const run = this.controller.createTestRun(request);
+        this.currentRun = run;
         const profile = this.profileManager.getActiveProfile();
         
         this.testResults.clear();
@@ -66,6 +79,7 @@ export class TestRunner {
         this.packageTestStatus.clear();
         this.outputBuffer = [];
         this.outputBufferSize = 0;
+        this.uiOutputBuffers.clear();
         this.outputChannel.clear();
         this.outputChannel.show(true);
 
@@ -81,7 +95,9 @@ export class TestRunner {
                 await this.runAllTestsInternal(run, profile, token);
             }
         } finally {
+            this.flushAllUIBuffers();
             this.flushOutputBuffer();
+            this.currentRun = undefined;
             run.end();
             this.collapsePassedPackages();
         }
@@ -89,6 +105,7 @@ export class TestRunner {
 
     async runAllTests(): Promise<void> {
         const run = this.controller.createTestRun(new vscode.TestRunRequest());
+        this.currentRun = run;
         const profile = this.profileManager.getActiveProfile();
         const tokenSource = new vscode.CancellationTokenSource();
         
@@ -97,13 +114,16 @@ export class TestRunner {
         this.packageTestStatus.clear();
         this.outputBuffer = [];
         this.outputBufferSize = 0;
+        this.uiOutputBuffers.clear();
         this.outputChannel.clear();
         this.outputChannel.show(true);
 
         try {
             await this.runAllTestsInternal(run, profile, tokenSource.token);
         } finally {
+            this.flushAllUIBuffers();
             this.flushOutputBuffer();
+            this.currentRun = undefined;
             run.end();
             this.collapsePassedPackages();
             tokenSource.dispose();
@@ -459,14 +479,14 @@ export class TestRunner {
         // Buffer output to reduce I/O overhead (flush every 64KB or 500 lines)
         this.appendToOutputBuffer(output);
         
-        // Send limited output to UI
+        // Buffer UI output instead of writing directly - reduces VS Code UI update overhead
         if (result.uiOutputLineCount < TestRunner.MAX_UI_OUTPUT_LINES) {
-            run.appendOutput(output.replace(/\n/g, '\r\n'), undefined, testItem);
+            this.appendToUIBuffer(testId, testItem, output);
             result.uiOutputLineCount++;
         } else if (result.uiOutputLineCount === TestRunner.MAX_UI_OUTPUT_LINES) {
             // Add truncation notice once
             const truncationMsg = '\r\n... [Output truncated - see Output Channel for full test output] ...\r\n';
-            run.appendOutput(truncationMsg, undefined, testItem);
+            this.appendToUIBuffer(testId, testItem, truncationMsg);
             result.uiOutputLineCount++;
         }
         
@@ -484,6 +504,60 @@ export class TestRunner {
                 outputData.lines.shift();
                 outputData.truncated = true;
             }
+        }
+    }
+
+    private appendToUIBuffer(testId: string, testItem: vscode.TestItem, output: string): void {
+        if (!this.uiOutputBuffers.has(testId)) {
+            this.uiOutputBuffers.set(testId, {
+                testItem,
+                lines: [],
+                byteSize: 0
+            });
+        }
+        
+        const buffer = this.uiOutputBuffers.get(testId)!;
+        const formatted = output.replace(/\n/g, '\r\n');
+        buffer.lines.push(formatted);
+        buffer.byteSize += formatted.length;
+        
+        // Flush individual buffer if it exceeds threshold
+        if (buffer.byteSize >= TestRunner.UI_BUFFER_SIZE) {
+            this.flushUIBuffer(testId);
+        }
+        
+        // Schedule periodic flush for responsiveness
+        this.scheduleUIFlush();
+    }
+
+    private scheduleUIFlush(): void {
+        if (!this.uiFlushTimer) {
+            this.uiFlushTimer = setTimeout(() => {
+                this.flushAllUIBuffers();
+                this.uiFlushTimer = undefined;
+            }, TestRunner.UI_FLUSH_INTERVAL);
+        }
+    }
+
+    private flushUIBuffer(testId: string): void {
+        const buffer = this.uiOutputBuffers.get(testId);
+        if (buffer && buffer.lines.length > 0 && this.currentRun) {
+            // Batch all lines into a single appendOutput call
+            const batchedOutput = buffer.lines.join('');
+            this.currentRun.appendOutput(batchedOutput, undefined, buffer.testItem);
+            buffer.lines = [];
+            buffer.byteSize = 0;
+        }
+    }
+
+    private flushAllUIBuffers(): void {
+        if (this.uiFlushTimer) {
+            clearTimeout(this.uiFlushTimer);
+            this.uiFlushTimer = undefined;
+        }
+        
+        for (const testId of this.uiOutputBuffers.keys()) {
+            this.flushUIBuffer(testId);
         }
     }
 
@@ -688,6 +762,11 @@ export class TestRunner {
         this.packageTestStatus.clear();
         this.outputBuffer = [];
         this.outputBufferSize = 0;
+        this.uiOutputBuffers.clear();
+        if (this.uiFlushTimer) {
+            clearTimeout(this.uiFlushTimer);
+            this.uiFlushTimer = undefined;
+        }
         this.outputChannel.clear();
         
         // Re-discover tests to get the latest test items (fast parallel discovery)
